@@ -12,3 +12,6 @@ htmlcov/
 *.db-wal
 .env
 .DS_Store
+
+# Test agent run outputs
+.test-agent/
