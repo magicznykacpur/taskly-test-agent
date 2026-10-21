@@ -8,7 +8,7 @@ files where a test could matter.
 
 Usage:
   plan.py --base <sha> [--head <sha>] --out plan.json --prompt-out prompt.md
-  plan.py --backfill --out plan.json --prompt-out prompt.md
+  plan.py --backfill [--area backend|frontend] --out plan.json --prompt-out prompt.md
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ def file_diff(base: str, head: str, path: str) -> str:
     return "\n".join(lines)
 
 
-def build_plan(base: str | None, head: str, backfill: bool) -> dict:
+def build_plan(base: str | None, head: str, backfill: bool, area: str | None = None) -> dict:
     plan: dict = {"mode": "backfill" if backfill else "pr", "base": base, "head": head,
                   "targets": [], "skipped": [], "changed_tests": [], "areas": []}
 
@@ -57,8 +57,10 @@ def build_plan(base: str | None, head: str, backfill: bool) -> dict:
 
     for status, path in entries:
         c = rules.classify(path)
+        if area and c.area != area:
+            continue
         if c.kind == "test":
-            if status != "deleted":
+            if status != "deleted" and not backfill:
                 plan["changed_tests"].append(path)
             continue
         if not c.testable:
@@ -130,6 +132,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base", help="Base commit (PR mode)")
     parser.add_argument("--head", default="HEAD")
     parser.add_argument("--backfill", action="store_true")
+    parser.add_argument("--area", choices=["backend", "frontend"], help="Limit the plan to one area")
     parser.add_argument("--out", required=True)
     parser.add_argument("--prompt-out")
     args = parser.parse_args(argv)
@@ -137,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--base is required unless --backfill is given")
 
     head = git("rev-parse", args.head).strip()
-    plan = build_plan(args.base, head, args.backfill)
+    plan = build_plan(args.base, head, args.backfill, args.area)
     Path(args.out).write_text(json.dumps(plan, indent=2))
     if args.prompt_out:
         Path(args.prompt_out).write_text(render_prompt(plan))
