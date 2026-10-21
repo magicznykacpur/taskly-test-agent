@@ -22,10 +22,11 @@ args=(
   # Deny anything not listed. Writes are further limited to test paths by the
   # agent's PreToolUse hook, and Bash to the test runner only.
   --permission-mode dontAsk
-  --allowedTools "Read,Glob,Grep,Write,Edit,Bash(python3 tools/test-agent/run_tests.py:*)"
+  --allowedTools "Read,Glob,Grep,Write,Edit,Skill,StructuredOutput,Bash(python3 tools/test-agent/run_tests.py:*)"
   --disallowedTools "WebFetch,WebSearch,Agent,Task,NotebookEdit"
   --strict-mcp-config
   --setting-sources project
+  --settings "$here/agent-settings.json"
   --max-turns "${TEST_AGENT_MAX_TURNS:-80}"
 )
 if [[ -n "${TEST_AGENT_MODEL:-}" ]]; then
@@ -38,7 +39,7 @@ fi
 # The agent's exit code is not trusted for the verdict: the workflow re-runs
 # the tests itself. Keep the JSON result even when the agent stops early.
 set +e
-claude "${args[@]}" > "$result_file"
+claude "${args[@]}" < /dev/null > "$result_file"
 status=$?
 set -e
 echo "claude exited with $status" >&2
