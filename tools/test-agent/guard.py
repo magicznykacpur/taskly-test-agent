@@ -92,9 +92,8 @@ def verify_patch(path: str) -> int:
                 print(f"Unparseable patch header: {line}", file=sys.stderr)
                 return 1
             touched.update(m.groups())
-        elif line.startswith(("rename ", "copy ")) or (
-            line.startswith(("old mode", "new mode", "new file mode", "deleted file mode"))
-            and not line.endswith(" 100644")
+        elif line.startswith(("rename ", "copy ", "old mode", "new mode")) or (
+            line.startswith(("new file mode", "deleted file mode")) and not line.endswith(" 100644")
         ):
             # Only plain, non-executable files: no symlinks, exec bits or renames.
             print(f"Unsupported patch operation: {line}", file=sys.stderr)

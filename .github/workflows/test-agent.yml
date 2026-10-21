@@ -1,0 +1,248 @@
+name: Test agent
+
+# Analyses each pull request, lets the test-engineer agent create or update unit
+# tests for the changed code, re-runs all tests independently, commits the
+# verified tests to the PR branch and reports the result in a PR comment.
+#
+# Security model (details in SOLUTION.md):
+# - `pull_request` (not `pull_request_target`): fork PRs never see secrets and are skipped.
+# - The job that runs the model has a read-only token and no git credentials.
+# - The agent config and tooling are taken from the base commit, so a PR cannot
+#   loosen its own guardrails.
+# - The job that can write to the repo never runs PR code and re-validates the
+#   patch before applying it.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions: {}
+
+concurrency:
+  group: test-agent-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  CLAUDE_CODE_VERSION: 2.1.306
+  BASE_SHA: ${{ github.event.pull_request.base.sha }}
+  HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
+jobs:
+  generate:
+    name: Analyse, generate and verify tests
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !contains(github.event.pull_request.labels.*.name, 'skip-test-agent')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      areas: ${{ steps.plan.outputs.areas }}
+      verified: ${{ steps.pipeline.outputs.verified }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Skip commits made by the agent
+        id: loop
+        run: |
+          if git log -1 --format=%B | grep -q '^Generated-by: test-agent$'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "The head commit was made by the test agent; nothing to do."
+          fi
+
+      - name: Use the agent config and tooling from the base commit
+        if: steps.loop.outputs.skip != 'true'
+        run: |
+          if git cat-file -e "$BASE_SHA:tools/test-agent/pipeline.sh" 2>/dev/null; then
+            # Replace the whole .claude directory too, so a PR cannot add settings
+            # or hooks that would run next to the model credential.
+            git rm -rq --ignore-unmatch .claude tools/test-agent CLAUDE.md
+            git checkout "$BASE_SHA" -- .claude tools/test-agent
+            git -c user.name=ci -c user.email=ci@localhost commit -q --allow-empty \
+              -m "Use trusted test agent config from base"
+          else
+            echo "::warning::Base commit has no test agent tooling; using the PR's own copy (bootstrap run)."
+          fi
+
+      - name: Plan
+        id: plan
+        if: steps.loop.outputs.skip != 'true'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          mkdir -p .test-agent
+          python3 tools/test-agent/plan.py --base "$BASE_SHA" --head "$HEAD_SHA" \
+            --out .test-agent/plan.json --prompt-out .test-agent/prompt.md
+          areas=$(python3 -c 'import json; print(" ".join(json.load(open(".test-agent/plan.json"))["areas"]))')
+          echo "areas=$areas" >> "$GITHUB_OUTPUT"
+          jq -n --arg head "$HEAD_SHA" --arg pr "$PR_NUMBER" --arg branch "$HEAD_REF" \
+            '{head: $head, pr: ($pr|tonumber), branch: $branch}' > .test-agent/meta.json
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: contains(steps.plan.outputs.areas, 'backend')
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend dependencies
+        if: contains(steps.plan.outputs.areas, 'backend')
+        run: |
+          python -m venv backend/.venv
+          # Wheels only: no setup.py code runs during install.
+          backend/.venv/bin/pip install --quiet --only-binary :all: -r backend/requirements.txt
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.plan.outputs.areas != ''
+        with:
+          node-version: "22"
+          cache: ${{ contains(steps.plan.outputs.areas, 'frontend') && 'npm' || '' }}
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        if: contains(steps.plan.outputs.areas, 'frontend')
+        working-directory: frontend
+        # No lifecycle scripts: dependency code must not run before the model credential is in the job.
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Install Claude Code
+        if: steps.plan.outputs.areas != ''
+        run: npm install --global --no-audit --no-fund "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+
+      - name: Run test agent pipeline
+        id: pipeline
+        if: steps.plan.outputs.areas != ''
+        env:
+          # Only this step sees the model credential. run_tests.py strips it
+          # from the environment before any project code runs.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          TEST_AGENT_MODEL: ${{ vars.TEST_AGENT_MODEL }}
+          TEST_AGENT_MAX_TURNS: ${{ vars.TEST_AGENT_MAX_TURNS }}
+          TEST_AGENT_MAX_BUDGET_USD: ${{ vars.TEST_AGENT_MAX_BUDGET_USD }}
+        run: |
+          if tools/test-agent/pipeline.sh .test-agent; then
+            echo "verified=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "verified=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Job summary
+        if: always() && steps.plan.outputs.areas != ''
+        run: |
+          python3 tools/test-agent/report.py --dir .test-agent --out .test-agent/summary.md \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          cat .test-agent/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() && steps.plan.outputs.areas != ''
+        with:
+          name: test-agent
+          path: .test-agent/
+          include-hidden-files: true
+          retention-days: 14
+
+  publish:
+    name: Commit tests and report on the PR
+    needs: generate
+    if: always() && needs.generate.result != 'skipped' && needs.generate.outputs.areas != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      VERIFIED: ${{ needs.generate.outputs.verified }}
+      COMMIT_ENABLED: ${{ vars.TEST_AGENT_COMMIT != 'false' }}
+    steps:
+      # Trusted code only: the base commit's tooling. PR code never runs here.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BASE_SHA }}
+          path: trusted
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: test-agent
+          path: run
+
+      - name: Validate patch
+        id: patch
+        run: |
+          if [[ ! -s run/tests.patch ]]; then
+            echo "state=empty" >> "$GITHUB_OUTPUT"
+          elif python3 trusted/tools/test-agent/guard.py verify-patch run/tests.patch; then
+            echo "state=valid" >> "$GITHUB_OUTPUT"
+          else
+            echo "state=rejected" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out PR branch
+        if: steps.patch.outputs.state == 'valid' && env.VERIFIED == 'true' && env.COMMIT_ENABLED == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.HEAD_REF }}
+          path: pr
+
+      - name: Commit verified tests
+        id: commit
+        if: steps.patch.outputs.state == 'valid' && env.VERIFIED == 'true' && env.COMMIT_ENABLED == 'true'
+        working-directory: pr
+        run: |
+          if [[ "$(git rev-parse HEAD)" != "$HEAD_SHA" ]]; then
+            echo "note=The PR branch moved on while the agent was running, so nothing was committed. The next run will cover the new commits." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git apply --index --whitespace=nowarn ../run/tests.patch
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -q -m "test: add unit tests for changed code" \
+              -m "Generated and verified by the test agent." \
+              -m "Generated-by: test-agent" -m "Workflow-run: $RUN_URL"
+          git push origin "HEAD:refs/heads/$HEAD_REF"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Post PR comment
+        env:
+          PATCH_STATE: ${{ steps.patch.outputs.state }}
+          COMMIT_SHA: ${{ steps.commit.outputs.sha }}
+          COMMIT_NOTE: ${{ steps.commit.outputs.note }}
+        run: |
+          note="$COMMIT_NOTE"
+          if [[ -z "$COMMIT_SHA" && -z "$note" ]]; then
+            case "$PATCH_STATE/$VERIFIED/$COMMIT_ENABLED" in
+              empty/*) note="The agent did not change any tests." ;;
+              rejected/*) note="The patch touched files outside test paths and was rejected." ;;
+              valid/false/*) note="Generated tests are not committed because verification failed. The patch is in the workflow artifacts." ;;
+              valid/true/false) note="Committing is disabled (TEST_AGENT_COMMIT=false). Download tests.patch from the workflow artifacts to apply it." ;;
+            esac
+          fi
+          python3 trusted/tools/test-agent/report.py --dir run --out comment.md \
+            --run-url "$RUN_URL" ${COMMIT_SHA:+--commit "$COMMIT_SHA"} ${note:+--publish-note "$note"} \
+            > status.txt
+          existing=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" --paginate \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- test-agent-report -->"))) | .id' | head -n1)
+          if [[ -n "$existing" ]]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" -F body=@comment.md > /dev/null
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" -F body=@comment.md > /dev/null
+          fi
+          cat comment.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail the check when tests fail
+        run: |
+          status=$(cat status.txt)
+          echo "Report status: $status"
+          [[ "$status" != "failure" ]]

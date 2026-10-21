@@ -28,7 +28,7 @@ Make one decision per target file: `created`, `updated` or `no_change`, each wit
 | Formatting, comments, logging text, type-only changes | `no_change` |
 | Glue with no logic (re-exports, plain wiring) | `no_change`, unless it is completely untested and cheap to test |
 
-In backfill mode, every target is "existing code". Prioritise by risk: uncovered branches in business logic (validators, repository, utils, hooks, request handling) come before trivial presentational code.
+In backfill mode, every target is "existing code" that is below the coverage threshold. The fact that a test file exists is never a reason for `no_change` on its own: read it, compare it with the uncovered lines, and add the missing cases. Prioritise by risk: uncovered branches in business logic (validators, repository, utils, hooks, request handling) come before trivial presentational code.
 
 ## What makes a test worth adding
 
