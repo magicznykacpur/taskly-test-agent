@@ -23,6 +23,45 @@ describe('TodoForm', () => {
     expect(onSubmit).not.toHaveBeenCalled()
   })
 
+  it('validates the description and due date, and clears the due date', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined)
+    const user = userEvent.setup()
+    render(
+      <TodoForm
+        initial={{
+          title: 'Task',
+          description: 'x'.repeat(2001),
+          priority: 'low',
+          due_date: '2026-10-05',
+          completed: false,
+        }}
+        onSubmit={onSubmit}
+        onCancel={vi.fn()}
+        busy={false}
+        error={null}
+      />,
+    )
+    const description = screen.getByLabelText(/Description/)
+    await user.type(description, 'y')
+    expect(description).toHaveValue('x'.repeat(2001) + 'y')
+    await user.click(screen.getByRole('button', { name: 'Save task' }))
+    expect(
+      screen.getByText('The description must be at most 2000 characters.'),
+    ).toBeVisible()
+    expect(onSubmit).not.toHaveBeenCalled()
+    await user.clear(description)
+    await user.type(description, ' ok ')
+    await user.clear(screen.getByLabelText(/Due date/))
+    await user.click(screen.getByRole('button', { name: 'Save task' }))
+    expect(onSubmit).toHaveBeenCalledWith({
+      title: 'Task',
+      description: 'ok',
+      priority: 'low',
+      due_date: null,
+      completed: false,
+    })
+  })
+
   it('submits trimmed values and the selected priority', async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined)
     const user = userEvent.setup()
