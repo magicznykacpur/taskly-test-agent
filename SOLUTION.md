@@ -70,7 +70,7 @@ pull_request ─▶ generate job (read-only token, model credential)            
 | PR weakens its own guardrails | The `.claude/` directory and `tools/test-agent/` are replaced with the base commit's versions before the agent runs, and the publish job runs only base-commit code. |
 | Prompt injection via PR text | PR title, body and comments are never given to the model. Diffs are marked as untrusted data. Model text in the PR comment is sanitised (HTML stripped, @-mentions neutralised, tables escaped). |
 | Wrong or useless tests | Independent re-run of full suites, typecheck, flaky re-run, and coverage per changed file. Skills require behavioural assertions and forbid weakening existing tests. A human reviews the bot commit in the PR. |
-| Loops and races | Commits pushed with `GITHUB_TOKEN` don't trigger workflows, and the commit trailer is checked as well. `concurrency` cancels outdated runs. Publishing is skipped if the PR head moved during the run. |
+| Loops and races | Runs on the bot's own commit stop at the `Generated-by: test-agent` trailer check, and GitHub additionally holds workflows triggered by the bot for approval. `concurrency` cancels outdated runs. Publishing is skipped if the PR head moved during the run. |
 | Cost and runaway | Plan-level target cap (25 files), `--max-turns`, optional `--max-budget-usd`, 30-minute job timeout. Agent turns and cost are shown in every report. |
 | Supply chain | Every action is pinned to a commit SHA, the Claude Code CLI is pinned to a version, and dependencies come from lockfiles. |
 
@@ -118,7 +118,19 @@ The agent ran three times locally through `pipeline.sh`, using exactly the code 
 
 Every run passed the guard (only test files changed), the independent full-suite re-run, `tsc` and the flaky re-run.
 
-__PR_EXAMPLE__
+### Pull request: [#1 feat: task statistics](https://github.com/magicznykacpur/taskly-test-agent/pull/1)
+
+The PR adds `GET /api/todos/stats` (schema, repository aggregate, route) and a frontend statistics summary (API call, query hook, component, and cache invalidation in the three mutation hooks). It deliberately contains **no tests**, and it breaks all 7 existing `TodosPage` tests, because the page now renders a component that needs a QueryClient. CI on the PR was red.
+
+What the workflow did ([run](https://github.com/magicznykacpur/taskly-test-agent/actions/runs/39918023749), 3 min):
+
+1. **Plan**: 10 targets (backend repository, router and schemas; frontend page, API, component, 4 hooks). `types.ts` and `queryKeys.ts` were skipped as declarative.
+2. **Agent decisions** (skills used: `test-impact-analysis`, `pytest-unit-tests`, `vitest-react-tests`, `run-unit-tests`, `test-agent-report`):
+   - *Created* `TodoStatsSummary.test.tsx` (loading, error, zero-total, rounded percentage, overdue badge only when > 0) and `useTodoStatsQuery.test.tsx`.
+   - *Updated* `TodosPage.test.tsx`: stubbed the new child, as the file already does for its other children, which fixed the 7 failing tests. It also added an assertion that the summary is rendered.
+   - *Updated* the three mutation hook tests to assert that the stats query is invalidated, plus the API, repository (compiled SQL uses the `FILTER` clauses with today's date), router (`/stats` is not routed to `/{todo_id}`, with a patched `today`) and schema tests.
+3. **Verification** (independent of the agent): backend 80 passed / 0 failed, coverage 97.1% → 100%. Frontend 95 passed / 0 failed, 99.4% coverage, typecheck clean. The flaky re-run was stable in both areas.
+4. **Publish**: patch re-validated, then committed as [`0b4630f`](https://github.com/magicznykacpur/taskly-test-agent/commit/0b4630f56725d0f48e9a10b15157e7f4fcc0ef2a) by `github-actions[bot]`. The [PR comment](https://github.com/magicznykacpur/taskly-test-agent/pull/1#issuecomment-6359869244) lists every decision with its reason, plus the numbers above. CI on the bot commit went from red to green.
 
 ## Assumptions
 
@@ -131,7 +143,7 @@ __PR_EXAMPLE__
 
 - Code under test runs in the same job as the agent process. The environment is stripped, but a malicious test could still read the agent's process memory or `/proc/<pid>/environ` as the same user. This is acceptable when only trusted writers can open PRs that run the workflow. It is not acceptable for untrusted contributors.
 - Changes to the agent, skills or tooling in a PR take effect only after merge, because PR runs use the base versions by design.
-- A commit pushed with `GITHUB_TOKEN` does not trigger CI on the bot commit. The workflow's verification covers exactly that tree, but required status checks would need a GitHub App token to re-trigger.
+- GitHub holds workflow runs triggered by the bot's commit as "action required" until a maintainer approves them (Actions → the run → Approve and run). The agent workflow has already verified exactly that tree, but required status checks need that approval, or a GitHub App token to push with.
 - Model output is non-deterministic. Two runs can produce different (both valid) tests. The verification gates catch wrong tests, not merely mediocre ones.
 - Large PRs are capped at 25 target files per run, and diffs are truncated at 400 lines per file (the agent reads the full file).
 - Mutation testing is not done, so "tests pass and coverage went up" does not prove the assertions are strong.

@@ -148,6 +148,8 @@ def run_frontend(tests: list[str], coverage: bool, work: Path) -> dict:
     if coverage:
         cmd += [
             "--coverage.enabled=true",
+            # Keep a coverage baseline even when the PR broke existing tests.
+            "--coverage.reportOnFailure=true",
             "--coverage.reporter=json",
             "--coverage.reporter=json-summary",
             f"--coverage.reportsDirectory={cov_dir}",
