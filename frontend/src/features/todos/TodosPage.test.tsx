@@ -34,6 +34,9 @@ vi.mock('./components/TodosHeader', () => ({
     </h1>
   ),
 }))
+vi.mock('./components/TodoStatsSummary', () => ({
+  TodoStatsSummary: () => <p>Stats summary</p>,
+}))
 vi.mock('./components/TodoFilters', () => ({ TodoFilters: () => null }))
 vi.mock('./components/TodoList', () => ({
   TodoList: (props: {
@@ -115,6 +118,11 @@ function setup({
   render(<TodosPage />)
   return { notify, mutateAsync }
 }
+
+it('shows the task statistics summary on the page', () => {
+  setup()
+  expect(screen.getByText('Stats summary')).toBeVisible()
+})
 
 it('toggles a task and announces completion or reactivation', async () => {
   const user = userEvent.setup()

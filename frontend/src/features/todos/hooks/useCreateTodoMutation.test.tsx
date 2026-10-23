@@ -58,6 +58,17 @@ it('creates the cached list when none exists and avoids duplicates', async () =>
   expect(client.getQueryData(todoKeys.list)).toEqual([todoFixture])
 })
 
+it('invalidates the statistics after a task is created', async () => {
+  const { client, wrapper } = setup()
+  const invalidate = vi.spyOn(client, 'invalidateQueries')
+  vi.mocked(todosApi.create).mockResolvedValue(todoFixture)
+  const { result } = renderHook(() => useCreateTodoMutation(), { wrapper })
+
+  await act(() => result.current.mutateAsync(input))
+
+  expect(invalidate).toHaveBeenCalledWith({ queryKey: todoKeys.stats })
+})
+
 it('leaves the cache untouched when creation fails', async () => {
   const { client, wrapper } = setup()
   client.setQueryData(todoKeys.list, [todoFixture])

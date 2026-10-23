@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.features.todos.models import TodoRecord
 from app.features.todos.repository import TodoRepository
-from app.features.todos.schemas import TodoCreate, TodoUpdate
+from app.features.todos.schemas import TodoCreate, TodoStats, TodoUpdate
 
 
 def test_list_maps_models_and_orders_tasks_newest_first(model_factory, todo_values, todo):
@@ -19,6 +19,25 @@ def test_list_maps_models_and_orders_tasks_newest_first(model_factory, todo_valu
     assert statement.compare(expected)
     compiled = str(statement.compile(dialect=postgresql.dialect()))
     assert "ORDER BY todos.created_at DESC, todos.id DESC" in compiled
+
+
+def test_stats_maps_counts_and_derives_active():
+    session = Mock(spec=Session)
+    session.execute.return_value.one.return_value = (5, 2, 1)
+    stats = TodoRepository(session).stats(date(2026, 10, 2))
+    assert stats == TodoStats(total=5, completed=2, active=3, overdue=1)
+
+
+def test_stats_aggregates_in_one_query_comparing_due_date_to_today():
+    session = Mock(spec=Session)
+    session.execute.return_value.one.return_value = (0, 0, 0)
+    TodoRepository(session).stats(date(2026, 10, 2))
+    session.execute.assert_called_once()
+    compiled = session.execute.call_args.args[0].compile(dialect=postgresql.dialect())
+    sql = str(compiled)
+    assert "FILTER (WHERE todos.completed IS true)" in sql
+    assert "todos.completed IS false AND todos.due_date <" in sql
+    assert date(2026, 10, 2) in compiled.params.values()
 
 
 def test_get_returns_none_for_missing_task():

@@ -1,6 +1,9 @@
+from datetime import date
+from unittest.mock import patch
+
 import pytest
 
-from app.features.todos.schemas import TodoCreate
+from app.features.todos.schemas import TodoCreate, TodoStats
 
 
 def test_list_returns_tasks_from_repository(client, repository_mock, todo):
@@ -30,6 +33,17 @@ def test_create_trims_input_and_returns_created_task(client, repository_mock, to
 def test_invalid_create_never_calls_repository(client, repository_mock, payload):
     assert client.post("/api/todos", json=payload).status_code == 422
     repository_mock.create.assert_not_called()
+
+
+def test_stats_returns_counts_for_today_and_is_not_parsed_as_an_id(client, repository_mock):
+    repository_mock.stats.return_value = TodoStats(total=4, completed=1, active=3, overdue=2)
+    with patch("app.features.todos.router.date") as date_mock:
+        date_mock.today.return_value = date(2026, 10, 2)
+        response = client.get("/api/todos/stats")
+    assert response.status_code == 200
+    assert response.json() == {"total": 4, "completed": 1, "active": 3, "overdue": 2}
+    repository_mock.stats.assert_called_once_with(date(2026, 10, 2))
+    repository_mock.get.assert_not_called()
 
 
 def test_get_returns_task(client, repository_mock, todo):
