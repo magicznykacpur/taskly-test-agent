@@ -36,6 +36,17 @@ it('removes the deleted task from the cached list', async () => {
   expect(client.getQueryData(todoKeys.list)).toEqual([other])
 })
 
+it('invalidates the statistics after a task is deleted', async () => {
+  const { client, wrapper } = setup()
+  const invalidate = vi.spyOn(client, 'invalidateQueries')
+  vi.mocked(todosApi.remove).mockResolvedValue(undefined)
+  const { result } = renderHook(() => useDeleteTodoMutation(), { wrapper })
+
+  await act(() => result.current.mutateAsync(7))
+
+  expect(invalidate).toHaveBeenCalledWith({ queryKey: todoKeys.stats })
+})
+
 it('keeps the cached list when deletion fails', async () => {
   const { client, wrapper } = setup()
   client.setQueryData(todoKeys.list, [todoFixture])

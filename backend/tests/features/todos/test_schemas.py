@@ -1,7 +1,17 @@
 import pytest
 from pydantic import ValidationError
 
-from app.features.todos.schemas import Priority, TodoCreate, TodoUpdate
+from app.features.todos.schemas import Priority, TodoCreate, TodoStats, TodoUpdate
+
+
+def test_stats_serializes_all_counts():
+    stats = TodoStats(total=3, completed=1, active=2, overdue=0)
+    assert stats.model_dump() == {"total": 3, "completed": 1, "active": 2, "overdue": 0}
+
+
+def test_stats_rejects_non_numeric_counts():
+    with pytest.raises(ValidationError):
+        TodoStats(total="many", completed=0, active=0, overdue=0)
 
 
 def test_create_applies_defaults():

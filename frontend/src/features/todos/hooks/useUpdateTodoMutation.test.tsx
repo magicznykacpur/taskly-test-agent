@@ -49,6 +49,19 @@ it('does not create a cached list when none exists', async () => {
   expect(client.getQueryData(todoKeys.list)).toBeUndefined()
 })
 
+it('invalidates the statistics after a task is updated', async () => {
+  const { client, wrapper } = setup()
+  const invalidate = vi.spyOn(client, 'invalidateQueries')
+  vi.mocked(todosApi.update).mockResolvedValue(todoFixture)
+  const { result } = renderHook(() => useUpdateTodoMutation(), { wrapper })
+
+  await act(() =>
+    result.current.mutateAsync({ id: 7, input: { completed: true } }),
+  )
+
+  expect(invalidate).toHaveBeenCalledWith({ queryKey: todoKeys.stats })
+})
+
 it('keeps the cache unchanged when the update fails', async () => {
   const { client, wrapper } = setup()
   client.setQueryData(todoKeys.list, [todoFixture])
